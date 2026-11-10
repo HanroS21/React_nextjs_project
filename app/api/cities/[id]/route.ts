@@ -1,62 +1,69 @@
 import { NextResponse } from "next/server";
-import { pool } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth";
+import { withTransaction } from "@/lib/db";
+import { ApiError, errorResponse } from "@/lib/api";
+import { requireDbUser } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import type { SavedCityRow } from "@/lib/types";
 
 type Params = { params: Promise<{ id: string }> };
 
-function parseId(raw: string): number | null {
+function parseId(raw: string): number {
   const id = Number(raw);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
-}
-
-// Every lookup includes user_id, so people can only change their own cities.
-async function findOwnedCity(id: number, userId: number): Promise<SavedCityRow | undefined> {
-  const [rows] = await pool.query<SavedCityRow[]>(
-    "SELECT id, city, note FROM saved_cities WHERE id = ? AND user_id = ?",
-    [id, userId]
-  );
-  return rows[0];
+  if (!Number.isSafeInteger(id) || id < 1) throw new ApiError(400, "Invalid city ID.");
+  return id;
 }
 
 export async function PUT(request: Request, { params }: Params) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ message: "Sign in is required." }, { status: 401 });
+  try {
+    const user = await requireDbUser();
+    const id = parseId((await params).id);
+    const body = (await request.json().catch(() => ({}))) as { note?: unknown };
+    const note = typeof body.note === "string" ? body.note.trim() : null;
+    if (note === null || note.length > 200) {
+      throw new ApiError(400, "Note must be 0–200 characters.");
+    }
 
-  const id = parseId((await params).id);
-  if (id === null) return NextResponse.json({ message: "Invalid city ID." }, { status: 400 });
+    await withTransaction(async (conn) => {
+      // FOR UPDATE locks the row, so two edits can't overwrite each other silently.
+      const [rows] = await conn.query<SavedCityRow[]>(
+        "SELECT id, city, note FROM saved_cities WHERE id = ? AND user_id = ? FOR UPDATE",
+        [id, user.id]
+      );
+      const city = rows[0];
+      if (!city) throw new ApiError(404, "Saved city not found.");
 
-  const body = (await request.json().catch(() => ({}))) as { note?: unknown };
-  const note = typeof body.note === "string" ? body.note.trim() : null;
-  if (note === null || note.length > 200) {
-    return NextResponse.json({ message: "Note must be 0–200 characters." }, { status: 400 });
+      await conn.query("UPDATE saved_cities SET note = ?, updated_at = ? WHERE id = ?", [note, new Date(), id]);
+      await audit(conn, user, "UPDATE", "saved_city", id, {
+        city: city.city,
+        changes: { note: { from: city.note, to: note } },
+      });
+    });
+
+    return NextResponse.json({ message: "Note updated." });
+  } catch (err) {
+    return errorResponse(err);
   }
-
-  const city = await findOwnedCity(id, user.id);
-  if (!city) return NextResponse.json({ message: "Saved city not found." }, { status: 404 });
-
-  await pool.query("UPDATE saved_cities SET note = ?, updated_at = ? WHERE id = ?", [note, new Date(), id]);
-  await audit(user, "UPDATE", "saved_city", id, {
-    city: city.city,
-    changes: { note: { from: city.note, to: note } },
-  });
-
-  return NextResponse.json({ message: "Note updated." });
 }
 
 export async function DELETE(_request: Request, { params }: Params) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ message: "Sign in is required." }, { status: 401 });
+  try {
+    const user = await requireDbUser();
+    const id = parseId((await params).id);
 
-  const id = parseId((await params).id);
-  if (id === null) return NextResponse.json({ message: "Invalid city ID." }, { status: 400 });
+    await withTransaction(async (conn) => {
+      const [rows] = await conn.query<SavedCityRow[]>(
+        "SELECT id, city, note FROM saved_cities WHERE id = ? AND user_id = ? FOR UPDATE",
+        [id, user.id]
+      );
+      const city = rows[0];
+      if (!city) throw new ApiError(404, "Saved city not found.");
 
-  const city = await findOwnedCity(id, user.id);
-  if (!city) return NextResponse.json({ message: "Saved city not found." }, { status: 404 });
+      await conn.query("DELETE FROM saved_cities WHERE id = ?", [id]);
+      await audit(conn, user, "DELETE", "saved_city", id, { city: city.city, note: city.note });
+    });
 
-  await pool.query("DELETE FROM saved_cities WHERE id = ?", [id]);
-  await audit(user, "DELETE", "saved_city", id, { city: city.city, note: city.note });
-
-  return NextResponse.json({ message: "City deleted." });
+    return NextResponse.json({ message: "City deleted." });
+  } catch (err) {
+    return errorResponse(err);
+  }
 }

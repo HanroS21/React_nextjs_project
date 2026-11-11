@@ -81,13 +81,33 @@ async function createSchema(): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
-  // Databases created before session_version existed get the column added here.
-  const [rows] = await pool.query<RowDataPacket[]>(`
-    SELECT COUNT(*) AS n FROM information_schema.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'session_version'
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS unlock_codes (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      code_hash CHAR(64) NOT NULL,
+      expires_at DATETIME(3) NOT NULL,
+      wrong_guesses INT NOT NULL DEFAULT 0,
+      created_at DATETIME(3) NOT NULL,
+      KEY idx_unlock_user (user_id, id),
+      CONSTRAINT fk_unlock_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+
+  // Adds columns to databases created by earlier versions of the app.
+  await addColumnIfMissing("users", "session_version", "INT NOT NULL DEFAULT 0");
+  await addColumnIfMissing("users", "failed_logins", "INT NOT NULL DEFAULT 0");
+  await addColumnIfMissing("users", "locked", "TINYINT(1) NOT NULL DEFAULT 0");
+}
+
+async function addColumnIfMissing(table: string, column: string, definition: string): Promise<void> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT COUNT(*) AS n FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [table, column]
+  );
   if (Number(rows[0].n) === 0) {
-    await pool.query("ALTER TABLE users ADD COLUMN session_version INT NOT NULL DEFAULT 0");
+    await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN ${column} ${definition}`);
   }
 }
 

@@ -11,7 +11,7 @@ export async function GET() {
   try {
     await requireUser("admin");
     const [rows] = await pool.query<RowDataPacket[]>(
-      "SELECT id, username, email, role, created_at, last_login_at FROM users ORDER BY id"
+      "SELECT id, username, email, role, locked, created_at, last_login_at FROM users ORDER BY id"
     );
     return NextResponse.json(rows);
   } catch (err) {

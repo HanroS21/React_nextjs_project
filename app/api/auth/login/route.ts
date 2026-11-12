@@ -4,10 +4,13 @@ import { pool, ensureSchema, withTransaction } from "@/lib/db";
 import { ApiError, errorResponse } from "@/lib/api";
 import { builtInAdmin, checkBuiltInPassword, sessionResponse } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { MAX_FAILED_LOGINS, issueUnlockCode } from "@/lib/security";
+import { MAX_FAILED_LOGINS } from "@/lib/security";
 import type { LoginRow } from "@/lib/types";
 
 type AccountRow = LoginRow & { locked: number };
+
+const LOCKED_MESSAGE =
+  "Your account is locked after too many failed sign-in attempts. Please contact your admin.";
 
 export async function POST(request: Request) {
   try {
@@ -34,13 +37,13 @@ export async function POST(request: Request) {
     // Unknown usernames get the same message as wrong passwords.
     if (!user) throw new ApiError(401, "Incorrect username or password.");
 
-    // A locked account is refused even with the right password, until the emailed code is entered.
-    if (user.locked === 1) throw new ApiError(423, lockedMessage(user.email));
+    // A locked account is refused even with the right password.
+    if (user.locked === 1) throw new ApiError(423, LOCKED_MESSAGE);
 
     const matches = user.password_hash ? await bcrypt.compare(password, user.password_hash) : false;
 
     if (!matches) {
-      // Count the failure. "locked" is assigned first, so it sees the count from before this attempt.
+      // "locked" is set from the count before this attempt is added.
       await pool.query(
         `UPDATE users
             SET locked = IF(failed_logins + 1 >= ?, 1, locked),
@@ -52,7 +55,7 @@ export async function POST(request: Request) {
       const [state] = await pool.query<RowDataPacket[]>("SELECT locked FROM users WHERE id = ?", [user.id]);
       if (Number(state[0].locked) === 1) {
         await announceLock(user);
-        throw new ApiError(423, lockedMessage(user.email));
+        throw new ApiError(423, LOCKED_MESSAGE);
       }
       throw new ApiError(401, "Incorrect username or password.");
     }
@@ -69,22 +72,14 @@ export async function POST(request: Request) {
   }
 }
 
-function lockedMessage(email: string | null): string {
-  return email
-    ? "Too many failed attempts. Enter the unlock code we emailed you, or request a new one."
-    : "Too many failed attempts. This account has no email address, so an administrator must unlock it.";
-}
-
-// Logs the lock, then emails the code. If the email fails, the lock still stands and the user can request a new code.
+// Records the lock in the activity log and prints a message for the developer.
 async function announceLock(user: AccountRow): Promise<void> {
   await withTransaction((conn) =>
     audit(conn, { id: user.id, username: user.username, email: user.email }, "UPDATE", "user", user.id, {
       event: "account_locked",
     })
   );
-  try {
-    await issueUnlockCode(user.id, user.username, user.email);
-  } catch (err) {
-    console.error("Could not send unlock code:", err);
-  }
+  console.log(
+    `[security] Account "${user.username}" is locked after too many failed sign-in attempts. Please contact your admin to unlock it.`
+  );
 }

@@ -76,12 +76,24 @@ export default function UsersPage() {
     await loadUsers();
   }
 
+  async function handleUnlock(target: AdminUser) {
+    setNotice(null);
+    const res = await fetch(`/api/users/${target.id}/unlock`, { method: "POST" });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice({ text: body.message ?? "Could not unlock the account.", isError: true });
+      return;
+    }
+    setNotice({ text: `Unlocked ${target.username}. They can sign in with their password.`, isError: false });
+    await loadUsers();
+  }
+
   return (
     <>
       <PageHeader
         eyebrow="Administration"
         title="Users"
-        description="Create accounts and remove users. Only administrators can add users."
+        description="Create accounts, remove users, and unlock accounts that were locked after failed sign-ins."
       />
 
       <section className="card">
@@ -133,19 +145,30 @@ export default function UsersPage() {
               <div className="user-identity">
                 <div className="avatar">{row.username.charAt(0).toUpperCase()}</div>
                 <div className="user-identity__text">
-                  <strong>{row.username}</strong>
+                  <strong>
+                    {row.username}{" "}
+                    {row.locked === 1 && <span className="role-badge">Locked</span>}
+                  </strong>
                   <span className="muted">
                     {row.role}{row.email ? ` · ${row.email}` : ""}
                   </span>
                 </div>
               </div>
+
               {row.id === user.id ? (
                 <span className="pill">You</span>
               ) : (
-                <button type="button" className="btn btn--ghost btn--small btn--danger"
-                  onClick={() => handleDelete(row)}>
-                  Delete
-                </button>
+                <div className="row-actions">
+                  {row.locked === 1 && (
+                    <button type="button" className="btn btn--small" onClick={() => handleUnlock(row)}>
+                      Unlock
+                    </button>
+                  )}
+                  <button type="button" className="btn btn--ghost btn--small btn--danger"
+                    onClick={() => handleDelete(row)}>
+                    Delete
+                  </button>
+                </div>
               )}
             </li>
           ))}

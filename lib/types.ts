@@ -9,8 +9,8 @@ export interface SessionUser {
   role: Role;
 }
 
-export type SessionRow = SessionUser & RowDataPacket;
-export type LoginRow = SessionUser & { password_hash: string | null } & RowDataPacket;
+export type SessionRow = SessionUser & { session_version: number } & RowDataPacket;
+export type LoginRow = SessionUser & { password_hash: string | null; session_version: number } & RowDataPacket;
 
 export interface SavedCity {
   id: number;
@@ -34,6 +34,7 @@ export interface AdminUser {
   username: string;
   email: string | null;
   role: Role;
+  locked: number;
   created_at: string;
   last_login_at: string | null;
 }
